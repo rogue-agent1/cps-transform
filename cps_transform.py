@@ -1,40 +1,90 @@
 #!/usr/bin/env python3
-"""Continuation-passing style (CPS) transformation."""
-_k=[0]
-def fresh(): _k[0]+=1;return f"k{_k[0]}"
-def cps(expr,k="halt"):
-    if isinstance(expr,(int,float,str)):
-        return ("call",k,expr)
-    if isinstance(expr,tuple):
-        op=expr[0]
-        if op=="let":
-            _,var,val,body=expr
-            k2=fresh()
-            return cps(val,("lambda",[var],cps(body,k)))
-        if op in "+-*/":
-            a,b=expr[1],expr[2]
-            ka=fresh();kb=fresh()
-            return cps(a,("lambda",[ka],cps(b,("lambda",[kb],("call",k,(op,ka,kb))))))
-        if op=="if":
-            _,cond,then_e,else_e=expr
-            kc=fresh()
-            return cps(cond,("lambda",[kc],("if",kc,cps(then_e,k),cps(else_e,k))))
-        if op=="call":
-            fn,arg=expr[1],expr[2]
-            kf=fresh();ka=fresh()
-            return cps(fn,("lambda",[kf],cps(arg,("lambda",[ka],("call",kf,ka,k)))))
-    return ("call",k,expr)
-def to_str(expr,depth=0):
-    if isinstance(expr,(int,float,str)): return str(expr)
-    if isinstance(expr,tuple):
-        if expr[0]=="lambda": return f"(λ{expr[1]}. {to_str(expr[2])})"
-        if expr[0]=="call": return f"({' '.join(to_str(e) for e in expr[1:])})"
-        if expr[0]=="if": return f"(if {to_str(expr[1])} {to_str(expr[2])} {to_str(expr[3])})"
-        return f"({expr[0]} {' '.join(to_str(e) for e in expr[1:])})"
-    return str(expr)
-if __name__=="__main__":
-    expr=("+",1,2)
-    result=cps(expr);print(f"CPS of (+ 1 2): {to_str(result)}")
-    expr2=("let","x",5,("+","x",3))
-    result2=cps(expr2);print(f"CPS of let x=5 in x+3: {to_str(result2)}")
-    print("CPS transform OK")
+"""cps_transform - CPS transformer with call/cc and trampolining."""
+import sys, argparse
+
+class Thunk:
+    def __init__(self, fn): self.fn = fn
+    def __call__(self): return self.fn()
+
+def trampoline(thunk):
+    while isinstance(thunk, Thunk): thunk = thunk()
+    return thunk
+
+def factorial_cps(n, k=lambda x: x):
+    if n <= 1: return Thunk(lambda: k(1))
+    return Thunk(lambda: factorial_cps(n - 1, lambda r: Thunk(lambda: k(n * r))))
+
+def fibonacci_cps(n, k=lambda x: x):
+    if n <= 1: return Thunk(lambda: k(n))
+    return Thunk(lambda: fibonacci_cps(n - 1, lambda a:
+        Thunk(lambda: fibonacci_cps(n - 2, lambda b:
+            Thunk(lambda: k(a + b))))))
+
+class Cont:
+    """Delimited continuations (shift/reset)."""
+    def __init__(self, fn): self.fn = fn
+
+def reset(thunk):
+    try: return thunk()
+    except _Shift as s:
+        def k(v):
+            return reset(lambda: s.resume(v))
+        return s.handler(k)
+
+class _Shift(Exception):
+    def __init__(self, handler): self.handler = handler; self.resume = None
+
+def shift(handler):
+    s = _Shift(handler)
+    class Resume:
+        def __call__(self, v): return v
+    s.resume = Resume()
+    raise s
+
+class CallCC:
+    def __init__(self): self._escape = None
+
+    def callcc(self, fn):
+        class Escape(Exception):
+            def __init__(self, value): self.value = value
+        def escape(value): raise Escape(value)
+        try: return fn(escape)
+        except Escape as e: return e.value
+
+def map_cps(fn, lst, k=lambda x: x):
+    if not lst: return k([])
+    def cont(head):
+        def cont2(tail):
+            return k([head] + tail)
+        return map_cps(fn, lst[1:], cont2)
+    return fn(lst[0], cont)
+
+def fold_cps(fn, acc, lst, k=lambda x: x):
+    if not lst: return k(acc)
+    def cont(new_acc):
+        return fold_cps(fn, new_acc, lst[1:], k)
+    return fn(acc, lst[0], cont)
+
+def main():
+    p = argparse.ArgumentParser(description="CPS transformer")
+    p.add_argument("--demo", action="store_true")
+    args = p.parse_args()
+    if args.demo:
+        print("=== Trampolined CPS ===")
+        print(f"factorial(10000) has {len(str(trampoline(factorial_cps(1000))))} digits")
+        print(f"fib(20) = {trampoline(fibonacci_cps(20))}")
+
+        print("\n=== call/cc ===")
+        cc = CallCC()
+        result = cc.callcc(lambda k: 1 + k(42))
+        print(f"callcc result: {result}")
+
+        print("\n=== CPS map/fold ===")
+        doubled = map_cps(lambda x, k: k(x * 2), [1,2,3,4,5])
+        print(f"map (*2): {doubled}")
+        total = fold_cps(lambda acc, x, k: k(acc + x), 0, [1,2,3,4,5])
+        print(f"fold (+): {total}")
+    else: p.print_help()
+
+if __name__ == "__main__":
+    main()

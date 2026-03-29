@@ -1,13 +1,14 @@
-# Cps Transform
+# cps-transform
 
-Continuation-passing style (CPS) transformation.
+Continuation-passing style transformer with call/cc, delimited continuations, and trampolining
 
 ## Usage
 
 ```bash
-python3 cps_transform.py
+python3 cps_transform.py --help
 ```
 
-## License
+## Features
 
-MIT
+- Zero dependencies (Python 3.8+ stdlib only)
+- Single file implementation
